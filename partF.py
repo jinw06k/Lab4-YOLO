@@ -95,7 +95,9 @@ threading.Thread(
     target=lambda: HTTPServer(("0.0.0.0", STREAM_PORT), MJPEGHandler).serve_forever(),
     daemon=True,
 ).start()
-print(f"[INFO] streaming video at http://<pi-ip>:{STREAM_PORT}/  (open it on your PC)")
+print(f"[INFO] streaming video on port {STREAM_PORT}. On your laptop, open:")
+print(f"[INFO]   http://10.42.0.1:{STREAM_PORT}/   (if the Pi is its own AP -- see setup_ap.sh)")
+print(f"[INFO]   http://<pi-ip>:{STREAM_PORT}/     (otherwise, use the Pi's IP from `hostname -I`)")
 
 # Loop over the frames from the video stream
 while True:
