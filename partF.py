@@ -14,6 +14,9 @@ Part F: Object detection and tracking with YOLO  (YOLO26n via ONNX)
 
 # import the necessary packages
 import time
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
+
 import cv2
 import numpy as np
 import onnxruntime as ort
@@ -63,6 +66,36 @@ cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
 cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 time.sleep(2.0)
+
+# ---- Stream the annotated video over the network ---------------------------
+# Instead of cv2.imshow (which needs an HDMI monitor, and is painfully slow
+# over `ssh -X` or RaspberryPi Connect), we serve the frames as MJPEG over
+# HTTP. The model loop never blocks on the network: it just drops the newest
+# JPEG into `latest_jpeg`, and the web server hands that to any browser that
+# connects. View it on your PC at  http://<pi-ip>:8000/
+latest_jpeg = None              # most recent annotated frame, set by the main loop
+STREAM_PORT = 8000
+
+class MJPEGHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
+        self.end_headers()
+        while True:
+            if latest_jpeg is not None:
+                self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n\r\n")
+                self.wfile.write(latest_jpeg)
+                self.wfile.write(b"\r\n")
+            time.sleep(0.05)
+
+    def log_message(self, *args):
+        pass                    # silence the per-request HTTP logging
+
+threading.Thread(
+    target=lambda: HTTPServer(("0.0.0.0", STREAM_PORT), MJPEGHandler).serve_forever(),
+    daemon=True,
+).start()
+print(f"[INFO] streaming video at http://<pi-ip>:{STREAM_PORT}/  (open it on your PC)")
 
 # Loop over the frames from the video stream
 while True:
@@ -127,15 +160,12 @@ while True:
         print(f"[INFO] {TARGET} not in view")
         # TODO: Decide what the robot should do when it can't see the object
 
-    # show the frame to our screen
-    cv2.imshow("frame", frame)
+    # Publish the annotated frame to the MJPEG stream (replaces cv2.imshow).
+    # Encoding to JPEG is cheap next to YOLO inference, so the loop stays fast.
+    ok_jpg, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+    if ok_jpg:
+        latest_jpeg = buf.tobytes()
 
-    # if [ESC] key is pressed, stop the loop
-    key = cv2.waitKey(1) & 0xFF
-    if key == 27:
-        break
-
-# cleanup
+# cleanup (press Ctrl-C in this terminal to stop the program)
 print("\n [INFO] Exiting Program and cleanup stuff \n")
-cv2.destroyAllWindows()
 cap.release()
