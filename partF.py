@@ -99,75 +99,89 @@ print(f"[INFO] streaming video on port {STREAM_PORT}. On your laptop, open:")
 print(f"[INFO]   http://10.42.0.1:{STREAM_PORT}/   (if the Pi is its own AP -- see setup_ap.sh)")
 print(f"[INFO]   http://<pi-ip>:{STREAM_PORT}/     (otherwise, use the Pi's IP from `hostname -I`)")
 
-# Loop over the frames from the video stream
-while True:
-    # Grab the next frame from the camera
-    ok, frame = cap.read()
-    if not ok:
-        print("[INFO] camera read failed -- is the camera connected?")
-        break
-    h, w, _ = frame.shape
+# Count frames and time the run so we can report the average FPS at the end.
+frame_count = 0
+start_time = time.time()
 
-    # ---- Run YOLO on the frame -------------------------------------------
-    # Pack the frame into the shape YOLO wants: resized to IMGSZ x IMGSZ,
-    # colors scaled to 0-1, and switched from BGR to RGB.
-    blob = cv2.dnn.blobFromImage(frame, 1 / 255.0, (IMGSZ, IMGSZ), swapRB=True)
-    
-    # One forward pass. YOLO26 returns up to 300 detections, already sorted
-    # best-first, each row = [x1, y1, x2, y2, confidence, class_number].
-    detections = session.run(None, {input_name: blob})[0][0]
+# Loop over the frames from the video stream (press Ctrl-C in this terminal to stop)
+try:
+    while True:
+        # Grab the next frame from the camera
+        ok, frame = cap.read()
+        if not ok:
+            print("[INFO] camera read failed -- is the camera connected?")
+            break
+        h, w, _ = frame.shape
 
-    # ---- Find TARGET object among the detections ----------------------------
-    center = None
-    for x1, y1, x2, y2, conf, cls in detections:
-        if int(cls) != target_id:
-            continue                   # some other object -> skip it
-        if conf < CONF:
-            continue                   # low confidence -> skip it
-            
-        # Detected our TARGET object with CONF+ confidence level:
-        # This box is in the IMGSZ x IMGSZ image,
-        # so scale it back to the real frame size
-        x1, x2 = x1 * w / IMGSZ, x2 * w / IMGSZ
-        y1, y2 = y1 * h / IMGSZ, y2 * h / IMGSZ
-        center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
-        cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
-        cv2.circle(frame, center, 5, (0, 0, 255), -1)
-        break                          # take the best match and stop
+        # ---- Run YOLO on the frame -------------------------------------------
+        # Pack the frame into the shape YOLO wants: resized to IMGSZ x IMGSZ,
+        # colors scaled to 0-1, and switched from BGR to RGB.
+        blob = cv2.dnn.blobFromImage(frame, 1 / 255.0, (IMGSZ, IMGSZ), swapRB=True)
 
-    # ===========================================================================
-    # TODO: Step 2 - Write your robot command
-    # (3 tasks)
-    # ===========================================================================
-    if center is not None:             # = if TARGET object is found
-        cx, cy = center
-        print(f"[INFO] {TARGET} found at x={cx}, y={cy}")
+        # One forward pass. YOLO26 returns up to 300 detections, already sorted
+        # best-first, each row = [x1, y1, x2, y2, confidence, class_number].
+        detections = session.run(None, {input_name: blob})[0][0]
 
-        # TODO: Write your robot control logic. Be creative!
-        # HINT: The frame is `w` pixels wide, so its middle is w // 2.
-            # e.g. if {cx} is less than {w//2}, which side is the object on?
-            
-        if cx < w // 2 - 50:
-            command = "LEFT"
-        elif cx > w // 2 + 50:
-            command = "RIGHT"
+        # ---- Find TARGET object among the detections ----------------------------
+        center = None
+        for x1, y1, x2, y2, conf, cls in detections:
+            if int(cls) != target_id:
+                continue                   # some other object -> skip it
+            if conf < CONF:
+                continue                   # low confidence -> skip it
+
+            # Detected our TARGET object with CONF+ confidence level:
+            # This box is in the IMGSZ x IMGSZ image,
+            # so scale it back to the real frame size
+            x1, x2 = x1 * w / IMGSZ, x2 * w / IMGSZ
+            y1, y2 = y1 * h / IMGSZ, y2 * h / IMGSZ
+            center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
+            cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
+            cv2.circle(frame, center, 5, (0, 0, 255), -1)
+            break                          # take the best match and stop
+
+        # ===========================================================================
+        # TODO: Step 2 - Write your robot command
+        # (3 tasks)
+        # ===========================================================================
+        if center is not None:             # = if TARGET object is found
+            cx, cy = center
+            print(f"[INFO] {TARGET} found at x={cx}, y={cy}")
+
+            # TODO: Write your robot control logic. Be creative!
+            # HINT: The frame is `w` pixels wide, so its middle is w // 2.
+                # e.g. if {cx} is less than {w//2}, which side is the object on?
+
+            if cx < w // 2 - 50:
+                command = "LEFT"
+            elif cx > w // 2 + 50:
+                command = "RIGHT"
+            else:
+                command = "FORWARD"
+
+            print("[INFO] robot command:", command)
+            # TODO: Actually send `command` to your robot
+
+
         else:
-            command = "FORWARD"
-        
-        print("[INFO] robot command:", command)
-        # TODO: Actually send `command` to your robot
-        
-        
-    else:
-        print(f"[INFO] {TARGET} not in view")
-        # TODO: Decide what the robot should do when it can't see the object
+            print(f"[INFO] {TARGET} not in view")
+            # TODO: Decide what the robot should do when it can't see the object
 
-    # Publish the annotated frame to the MJPEG stream (replaces cv2.imshow).
-    # Encoding to JPEG is cheap next to YOLO inference, so the loop stays fast.
-    ok_jpg, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
-    if ok_jpg:
-        latest_jpeg = buf.tobytes()
+        # Publish the annotated frame to the MJPEG stream (replaces cv2.imshow).
+        # Encoding to JPEG is cheap next to YOLO inference, so the loop stays fast.
+        ok_jpg, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
+        if ok_jpg:
+            latest_jpeg = buf.tobytes()
 
-# cleanup (press Ctrl-C in this terminal to stop the program)
+        frame_count += 1
+
+except KeyboardInterrupt:
+    pass                                   # Ctrl-C -> fall through to cleanup
+
+# cleanup
 print("\n [INFO] Exiting Program and cleanup stuff \n")
+elapsed = time.time() - start_time
+if elapsed > 0 and frame_count > 0:
+    print(f"[INFO] processed {frame_count} frames in {elapsed:.1f}s "
+          f"-> {frame_count / elapsed:.2f} FPS")
 cap.release()
