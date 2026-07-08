@@ -54,6 +54,7 @@ cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
 time.sleep(2.0)
 
 # ---- Grab frames and publish them to the stream ----------------------------
+frame_count = 0
 try:
     while True:
         ok, frame = cap.read()
@@ -63,6 +64,14 @@ try:
         ok_jpg, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if ok_jpg:
             latest_jpeg = buf.tobytes()
+
+        # Print a heartbeat so it's clear the camera is working (this script has
+        # no other per-frame output). First frame confirms it's live.
+        if frame_count == 0:
+            print("[INFO] camera OK -- streaming now. Open the URL above; Ctrl-C to stop.")
+        frame_count += 1
+        if frame_count % 100 == 0:
+            print(f"[INFO] still streaming ({frame_count} frames)")
 except KeyboardInterrupt:
     pass
 
