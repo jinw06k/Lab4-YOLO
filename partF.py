@@ -1,12 +1,15 @@
 """
-Part F: Object detection and tracking with YOLO  (YOLO26n via ONNX)
+Part F: Object detection and tracking with YOLO  (YOLO26n via Ultralytics)
 
-    Uses a small YOLO model (yolo26n) to detect real objects 
-    and send driving command for your robot.
+    Uses a small YOLO model (yolo26n) to detect real objects
+    and send a driving command for your robot.
 
-    Run a pre-exported yolo26n.onnx file (which you
-    git-pulled). No need to pip install ultralytics.
-    
+    Runs the model with the Ultralytics library -- the standard YOLO API:
+        model = YOLO("yolo26n.pt")
+        results = model(frame)
+    Ultralytics handles preprocessing, NMS, and scaling boxes back to the
+    frame size for you, so the detection code stays short.
+
     Ultralytics YOLO26 Overview: https://docs.ultralytics.com/models/yolo26#overview
 
     EECS 473 Lab 4 -- YOLO version
@@ -18,8 +21,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import cv2
-import numpy as np
-import onnxruntime as ort
+from ultralytics import YOLO
 
 # ===========================================================================
 # TODO: Step 1 - What object should the robot look for?
@@ -27,34 +29,23 @@ import onnxruntime as ort
 # ===========================================================================
 TARGET = ""                   # TODO: Change target to the object you want to follow
 CONF = 0                      # TODO: Decide minimum confidence level (0~1)
-IMGSZ = 320                   # provided yolo26n.onnx was exported at img size 320. Do not change
+IMGSZ = 320                   # size the model runs at (smaller = faster, less accurate)
 
-# COCO dataset that YOLO was trained on (see https://cocodataset.org/#home)
-COCO_CLASSES = [
-    "person", "bicycle", "car", "motorcycle", "airplane", "bus", "train", "truck",
-    "boat", "traffic light", "fire hydrant", "stop sign", "parking meter", "bench",
-    "bird", "cat", "dog", "horse", "sheep", "cow", "elephant", "bear", "zebra",
-    "giraffe", "backpack", "umbrella", "handbag", "tie", "suitcase", "frisbee",
-    "skis", "snowboard", "sports ball", "kite", "baseball bat", "baseball glove",
-    "skateboard", "surfboard", "tennis racket", "bottle", "wine glass", "cup",
-    "fork", "knife", "spoon", "bowl", "banana", "apple", "sandwich", "orange",
-    "broccoli", "carrot", "hot dog", "pizza", "donut", "cake", "chair", "couch",
-    "potted plant", "bed", "dining table", "toilet", "tv", "laptop", "mouse",
-    "remote", "keyboard", "cell phone", "microwave", "oven", "toaster", "sink",
-    "refrigerator", "book", "clock", "vase", "scissors", "teddy bear", "hair drier",
-    "toothbrush",
-]
-
-# Make the TARGET is a known object
-if TARGET not in COCO_CLASSES:
-    print(f"'{TARGET}' is not a known object. Pick one of:\n{COCO_CLASSES}")
-    raise SystemExit
-target_id = COCO_CLASSES.index(TARGET)
-
-# Load the YOLO model (the yolo26n.onnx file)
+# Load the YOLO model. The weights (yolo26n.pt) are bundled in this repo, so
+# this works offline -- no download needed.
 print("[INFO] loading YOLO model...")
-session = ort.InferenceSession("yolo26n.onnx", providers=["CPUExecutionProvider"])
-input_name = session.get_inputs()[0].name
+model = YOLO("yolo26n.pt")
+
+# model.names maps a class id -> its name (the 80 COCO classes yolo26n was
+# trained on; see https://cocodataset.org/#home).
+class_names = model.names
+
+# Make sure TARGET is a known object
+if TARGET not in class_names.values():
+    print(f"'{TARGET}' is not a known object. Pick one of:")
+    print(sorted(class_names.values()))
+    raise SystemExit
+target_id = next(i for i, name in class_names.items() if name == TARGET)
 
 # Open the camera. Force a small MJPG mode
 # Is your Pi is constantly rebooting?
@@ -72,7 +63,7 @@ time.sleep(2.0)
 # over `ssh -X` or RaspberryPi Connect), we serve the frames as MJPEG over
 # HTTP. The model loop never blocks on the network: it just drops the newest
 # JPEG into `latest_jpeg`, and the web server hands that to any browser that
-# connects. View it on your PC at  http://<pi-ip>:8000/
+# connects.
 latest_jpeg = None              # most recent annotated frame, set by the main loop
 STREAM_PORT = 8000
 
@@ -95,9 +86,8 @@ threading.Thread(
     target=lambda: HTTPServer(("0.0.0.0", STREAM_PORT), MJPEGHandler).serve_forever(),
     daemon=True,
 ).start()
-print(f"[INFO] streaming video on port {STREAM_PORT}. On your laptop, open:")
-print(f"[INFO]   http://10.42.0.1:{STREAM_PORT}/   (if the Pi is its own AP -- see setup_ap.sh)")
-print(f"[INFO]   http://<pi-ip>:{STREAM_PORT}/     (otherwise, use the Pi's IP from `hostname -I`)")
+print(f"[INFO] streaming video on port {STREAM_PORT}. On your laptop (same MWireless"
+      f" network as the Pi), open  http://<pi-ip>:{STREAM_PORT}/  -- get <pi-ip> from `hostname -I`")
 
 # Count frames and time the run so we can report the average FPS at the end.
 frame_count = 0
@@ -114,31 +104,21 @@ try:
         h, w, _ = frame.shape
 
         # ---- Run YOLO on the frame -------------------------------------------
-        # Pack the frame into the shape YOLO wants: resized to IMGSZ x IMGSZ,
-        # colors scaled to 0-1, and switched from BGR to RGB.
-        blob = cv2.dnn.blobFromImage(frame, 1 / 255.0, (IMGSZ, IMGSZ), swapRB=True)
+        # Ultralytics does the preprocessing for us. We ask it to keep only our
+        # TARGET class (classes=[target_id]) at CONF+ confidence, so `boxes`
+        # holds just the detections we care about, in frame-pixel coordinates.
+        results = model.predict(frame, imgsz=IMGSZ, conf=CONF,
+                                classes=[target_id], verbose=False)
+        boxes = results[0].boxes
 
-        # One forward pass. YOLO26 returns up to 300 detections, already sorted
-        # best-first, each row = [x1, y1, x2, y2, confidence, class_number].
-        detections = session.run(None, {input_name: blob})[0][0]
-
-        # ---- Find TARGET object among the detections ----------------------------
+        # ---- Find the best TARGET detection ----------------------------------
         center = None
-        for x1, y1, x2, y2, conf, cls in detections:
-            if int(cls) != target_id:
-                continue                   # some other object -> skip it
-            if conf < CONF:
-                continue                   # low confidence -> skip it
-
-            # Detected our TARGET object with CONF+ confidence level:
-            # This box is in the IMGSZ x IMGSZ image,
-            # so scale it back to the real frame size
-            x1, x2 = x1 * w / IMGSZ, x2 * w / IMGSZ
-            y1, y2 = y1 * h / IMGSZ, y2 * h / IMGSZ
+        if len(boxes) > 0:
+            best = boxes[int(boxes.conf.argmax())]      # highest-confidence one
+            x1, y1, x2, y2 = best.xyxy[0].tolist()      # already in frame pixels
             center = (int((x1 + x2) / 2), int((y1 + y2) / 2))
             cv2.rectangle(frame, (int(x1), int(y1)), (int(x2), int(y2)), (0, 255, 0), 2)
             cv2.circle(frame, center, 5, (0, 0, 255), -1)
-            break                          # take the best match and stop
 
         # ===========================================================================
         # TODO: Step 2 - Write your robot command
