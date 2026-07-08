@@ -1,6 +1,6 @@
-opencv-python==4.11.0.86
+# YOLO via the Ultralytics library (the standard YOLO API). Pulls in PyTorch.
+# Pin to the version the lab was tested with so future runs are reproducible:
+#   pip show ultralytics   # then set the version below
+ultralytics
+opencv-python   # camera capture, JPEG encoding for the stream, drawing boxes
 numpy
-# onnxruntime is REQUIRED for yolo26 (--backend ort); OpenCV DNN can't run its
-# NMS-free head. Not needed for yolov8n/yolo11n. Its aarch64 wheel DOES run on
-# the Pi Zero 2W's Cortex-A53 (unlike torch — verified 2026-06-09).
-onnxruntime
