@@ -21,6 +21,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import cv2
+from picamera2 import Picamera2
 from ultralytics import YOLO
 
 # ===========================================================================
@@ -31,8 +32,8 @@ TARGET = ""                   # TODO: Change target to the object you want to fo
 CONF = 0                      # TODO: Decide minimum confidence level (0~1)
 IMGSZ = 320                   # size the model runs at (smaller = faster, less accurate)
 
-# Load the YOLO model. The weights (yolo26n.pt) are bundled in this repo, so
-# this works offline -- no download needed.
+# Load the YOLO model. If yolo26n.pt isn't already in this folder, Ultralytics
+# downloads it (~5 MB) from GitHub on first run -- so the first run needs internet.
 print("[INFO] loading YOLO model...")
 model = YOLO("yolo26n.pt")
 
@@ -47,16 +48,18 @@ if TARGET not in class_names.values():
     raise SystemExit
 target_id = next(i for i, name in class_names.items() if name == TARGET)
 
-# Open the camera. Force a small MJPG mode
+# Open the camera (CSI Raspberry Pi camera, via Picamera2).
 # Is your Pi is constantly rebooting?
 # --> Find a better power supply (5V 1.5A+)
 print("[INFO] opening camera...")
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-time.sleep(2.0)
+picam2 = Picamera2()
+# "RGB888" gives a BGR-ordered array, which is what OpenCV and Ultralytics
+# expect -- so no color conversion is needed. (If colors look swapped in the
+# stream, change this to "BGR888".)
+picam2.configure(picam2.create_preview_configuration(
+    main={"size": (640, 480), "format": "RGB888"}))
+picam2.start()
+time.sleep(2.0)                     # let auto exposure / white balance settle
 
 # ---- Stream the annotated video over the network ---------------------------
 # Instead of cv2.imshow (which needs an HDMI monitor, and is painfully slow
@@ -97,10 +100,7 @@ start_time = time.time()
 try:
     while True:
         # Grab the next frame from the camera
-        ok, frame = cap.read()
-        if not ok:
-            print("[INFO] camera read failed -- is the camera connected?")
-            break
+        frame = picam2.capture_array()      # numpy array, BGR-ordered
         h, w, _ = frame.shape
 
         # ---- Run YOLO on the frame -------------------------------------------
@@ -164,4 +164,4 @@ elapsed = time.time() - start_time
 if elapsed > 0 and frame_count > 0:
     print(f"[INFO] processed {frame_count} frames in {elapsed:.1f}s "
           f"-> {frame_count / elapsed:.2f} FPS")
-cap.release()
+picam2.stop()
