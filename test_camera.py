@@ -17,6 +17,7 @@ import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import cv2
+from picamera2 import Picamera2
 
 STREAM_PORT = 8000
 latest_jpeg = None                  # newest frame, set by the main loop
@@ -44,23 +45,21 @@ threading.Thread(
 print(f"[INFO] streaming camera on port {STREAM_PORT}. On your laptop, open")
 print(f"[INFO]   http://<pi-ip>:{STREAM_PORT}/   (get <pi-ip> from `hostname -I`)")
 
-# ---- Open the camera --------------------------------------------------------
+# ---- Open the camera (CSI Raspberry Pi camera, via Picamera2) ---------------
 print("[INFO] opening camera...")
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-time.sleep(2.0)
+picam2 = Picamera2()
+# "RGB888" gives a BGR-ordered array, which is what OpenCV expects -- so no
+# color conversion is needed. (If colors look swapped, change this to "BGR888".)
+picam2.configure(picam2.create_preview_configuration(
+    main={"size": (640, 480), "format": "RGB888"}))
+picam2.start()
+time.sleep(2.0)                     # let auto exposure / white balance settle
 
 # ---- Grab frames and publish them to the stream ----------------------------
 frame_count = 0
 try:
     while True:
-        ok, frame = cap.read()
-        if not ok:
-            print("[INFO] camera read failed -- is the camera connected?")
-            break
+        frame = picam2.capture_array()      # numpy array, BGR-ordered
         ok_jpg, buf = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if ok_jpg:
             latest_jpeg = buf.tobytes()
@@ -76,4 +75,4 @@ except KeyboardInterrupt:
     pass
 
 print("\n [INFO] Exiting -- cleanup \n")
-cap.release()
+picam2.stop()
